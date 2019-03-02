@@ -7,7 +7,10 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"net/http"
+	"os"
+	"runtime"
 	"time"
 
 	"google.golang.org/appengine"
@@ -28,6 +31,11 @@ const (
 )
 
 func init() {
+	http.HandleFunc("/cat", catHandler)
+	http.HandleFunc("/info", infoHandler)
+	http.HandleFunc("/count", countHandler)
+	http.HandleFunc("/count2", myCountHandler)
+	http.HandleFunc("/stat", statKindHandler)
 	http.HandleFunc("/insertAndLookUpByKey", insertAndLookUpByKeyHandler)
 	http.HandleFunc("/insertAndIndexedQuery", insertAndIndexedQueryHandler)
 	http.HandleFunc("/insertAndProjectionQuery", insertAndProjectionQueryHandler)
@@ -39,6 +47,19 @@ type testkind struct {
 	Value     string    `datastore:"value"`
 	CreatedAt time.Time `datastore:"created_at"`
 	UpdatedAt time.Time `datastore:"updated_at"`
+}
+
+type statKind struct {
+	Count     int64     `datastore:"count"`
+	Bytes     int64     `datastore:"bytes"`
+	Timestamp time.Time `datastore:"timestamp"`
+
+	KindName            string `datastore:"kind_name"`
+	EntityBytes         int64  `datastore:"entity_bytes"`
+	BuiltinIndexBytes   int64  `datastore:"builtin_index_bytes"`
+	BuiltinIndexCount   int64  `datastore:"builtin_index_count"`
+	CompositeIndexbytes int64  `datastore:"composite_index_bytes"`
+	CompositeIndexCount int64  `datastore:"composite_index_count"`
 }
 
 func insertAndLookUpByKeyHandler(w http.ResponseWriter, r *http.Request) {
@@ -71,6 +92,7 @@ func insertAndTestQuery(w http.ResponseWriter, r *http.Request, qType queryType)
 		ancestorKey, err = datastore.Put(ctx, k, &testkind{})
 		if err != nil {
 			aelog.Errorf(ctx, "datastore.Put failed: %v", err)
+			fmt.Fprintf(w, "datastore.Put failed: %v", err)
 			return
 		}
 	}
@@ -152,7 +174,7 @@ func insertAndTestQuery(w http.ResponseWriter, r *http.Request, qType queryType)
 		}
 	}
 
-	fmt.Fprintln(w, "<pre>")
+	fmt.Fprintln(w, "<html><pre>")
 
 	fmt.Fprintln(w, "### Retry ###")
 	smRetry.PrintSummary(w)
@@ -160,5 +182,149 @@ func insertAndTestQuery(w http.ResponseWriter, r *http.Request, qType queryType)
 	fmt.Fprintln(w, "### Duration[ms] ###")
 	smDuration.PrintSummary(w)
 
-	fmt.Fprintln(w, "</pre>")
+	fmt.Fprintln(w, "</pre></html>")
+}
+
+func countHandler(w http.ResponseWriter, r *http.Request) {
+	ctx := appengine.NewContext(r)
+	q := datastore.NewQuery("testkind")
+	var cnt int
+	var err error
+	if cnt, err = q.Count(ctx); err != nil {
+		aelog.Errorf(ctx, "q.Count failed: %v", err)
+		fmt.Fprintf(w, "q.Count failed: %v", err)
+		return
+	}
+	fmt.Fprintln(w, "<html><pre>")
+
+	fmt.Fprintln(w, "### Count ###")
+	fmt.Fprintf(w, "%d\n", cnt)
+
+	fmt.Fprintln(w, "</pre></html>")
+}
+
+func myCountHandler(w http.ResponseWriter, r *http.Request) {
+	ctx := appengine.NewContext(r)
+	q := datastore.NewQuery("testkind").KeysOnly().Order("__key__").Limit(1000)
+	cnt := 0
+	for {
+		var ks []*datastore.Key
+		var err error
+		aelog.Infof(ctx, "q.GetAll()")
+		if ks, err = q.GetAll(ctx, nil); err != nil {
+			aelog.Errorf(ctx, "q.GetAll failed: %v", err)
+			fmt.Fprintf(w, "q.GetAll failed: %v", err)
+			return
+		}
+		if len(ks) == 0 {
+			break
+		}
+		aelog.Infof(ctx, "len(ks)=%d", len(ks))
+		cnt += len(ks)
+		lastKey := ks[len(ks)-1]
+		q = datastore.NewQuery("testkind").KeysOnly().Filter("__key__ >", lastKey).Order("__key__").Limit(1000)
+	}
+	fmt.Fprintln(w, "<html><pre>")
+
+	fmt.Fprintln(w, "### Count ###")
+	fmt.Fprintf(w, "%d\n", cnt)
+
+	fmt.Fprintln(w, "</pre></html>")
+}
+
+func statKindHandler(w http.ResponseWriter, r *http.Request) {
+	ctx := appengine.NewContext(r)
+	q := datastore.NewQuery("__Stat_Kind__").Filter("kind_name =", "testkind")
+	var stats []statKind
+	if _, err := q.GetAll(ctx, &stats); err != nil {
+		aelog.Errorf(ctx, "q.GetAll failed: %v", err)
+		fmt.Fprintf(w, "q.GetAll failed: %v", err)
+		return
+	}
+	if len(stats) == 0 {
+		aelog.Errorf(ctx, "ERROR: len(stats) == 0")
+		fmt.Fprintf(w, "ERROR: len(stats) == 0")
+		return
+	}
+	fmt.Fprintln(w, "<html><pre>")
+
+	fmt.Fprintln(w, "### Count ###")
+	fmt.Fprintf(w, "%v\n", stats[0].Count)
+
+	fmt.Fprintln(w, "</pre></html>")
+}
+
+func infoHandler(w http.ResponseWriter, r *http.Request) {
+
+	fmt.Fprintln(w, "<html><pre>")
+
+	fmt.Fprintln(w, "### rumtime ###")
+	fmt.Fprintf(w, "runtime.GOARCH: %v\n", runtime.GOARCH)
+	fmt.Fprintf(w, "runtime.GOOS: %v\n", runtime.GOOS)
+	fmt.Fprintf(w, "runtime.NumCPU(): %v\n", runtime.NumCPU())
+
+	fmt.Fprintln(w, "### os ###")
+	fmt.Fprintf(w, "os.Environ(): %v\n", os.Environ())
+	if dir, err := os.Getwd(); err == nil {
+		fmt.Fprintf(w, "os.Getwd(): %v\n", dir)
+	}
+
+	fmt.Fprintln(w, "### os ###")
+	ls(w, r.FormValue("path"))
+
+	fmt.Fprintln(w, "</pre></html>")
+}
+
+func catHandler(w http.ResponseWriter, r *http.Request) {
+	cat(w, r.FormValue("path"))
+}
+
+func ls(w http.ResponseWriter, path string) {
+	if path == "" {
+		path = "."
+	}
+	d, err := os.Open(path)
+	if err != nil {
+		fmt.Fprintln(w, err)
+		return
+	}
+	defer d.Close()
+	fi, err := d.Readdir(-1)
+	if err != nil {
+		fmt.Fprintln(w, err)
+		return
+	}
+	for _, fi := range fi {
+		fmt.Fprintf(w, "%s %8d %s %s\n", fi.Mode().String(), fi.Size(), fi.ModTime().Format("2006-01-02 15:04:05"), fi.Name())
+	}
+}
+
+func cat(w http.ResponseWriter, path string) {
+	if path == "" {
+		ls(w, ".")
+		return
+	}
+	finfo, err := os.Stat(path)
+	if err != nil {
+		fmt.Fprintln(w, err)
+		return
+	}
+	if finfo.Mode().IsDir() {
+		ls(w, path)
+		return
+	} else if !finfo.Mode().IsRegular() {
+		return
+	}
+
+	fh, err := os.Open(path)
+	if fh == nil {
+		fmt.Fprintf(os.Stderr, "cat: can't open %s: error %s\n", path, err)
+		return
+	}
+
+	_, err = io.Copy(w, fh)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "cat: error %s\n", err)
+		return
+	}
 }
